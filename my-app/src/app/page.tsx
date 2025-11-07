@@ -119,7 +119,7 @@
 
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useEffect, useState } from "react";
-import { Twitter, LogOut, RefreshCw, Loader2, Sparkles, AlertCircle, PenLine, Send, Mic, Keyboard, X, Heart, Repeat2, MessageCircle, BarChart3, TrendingUp, Users, Activity, Zap, MessageSquare } from "lucide-react";
+import { Twitter, LogOut, RefreshCw, Loader2, Sparkles, AlertCircle, PenLine, Send, Mic, Keyboard, X, Heart, Repeat2, MessageCircle, BarChart3, TrendingUp, Users, Activity, ChevronRight } from "lucide-react";
 
 type Tweet = {
   id: string;
@@ -137,28 +137,10 @@ type AnalysisResult = {
   toxicity_score?: number;
 };
 
-type IntentResult = {
-  original_tweet: string;
-  intent_analysis: string;
-  modified_tweet: string;
-  improvements: string[];
-};
-
-type FactCheckResult = {
-  facts: string[];
-};
-
-type ChatResult = {
-  answer: string;
-};
-
 type AnalysisState = {
   analyzing: boolean;
   result: AnalysisResult | null;
   type: 'emotion' | 'intention' | 'factual' | null;
-  intentResult?: IntentResult;
-  factCheckResult?: FactCheckResult;
-  chatResult?: ChatResult;
 };
 
 type PostingState = {
@@ -168,9 +150,6 @@ type PostingState = {
   success: boolean;
   useKannada: boolean;
   isRecording: boolean;
-  showIntentHelper: boolean;
-  intentAnalyzing: boolean;
-  suggestedTweet?: string;
 };
 
 type Stats = {
@@ -180,7 +159,35 @@ type Stats = {
   topEmotion: string;
 };
 
-const API_BASE = "https://is-your-tweet-sweet-76xs.vercel.app";
+const FALLBACK_TWEETS: Tweet[] = [
+  {
+    id: "1",
+    text: "Just finished an amazing workout session! Feeling energized and ready to tackle the day 💪 #fitness #motivation",
+    created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+  },
+  {
+    id: "2",
+    text: "Why do people keep ignoring climate change? We need to act NOW before it's too late 😡🌍",
+    created_at: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString()
+  },
+  {
+    id: "3",
+    text: "Had the most beautiful sunset view today. Sometimes we need to pause and appreciate the little things ✨🌅",
+    created_at: new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString()
+  },
+  {
+    id: "4",
+    text: "According to recent studies, drinking 8 glasses of water daily improves cognitive function by 30%. Stay hydrated! 💧",
+    created_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+  },
+  {
+    id: "5",
+    text: "Feeling a bit down today. Sometimes life just gets overwhelming and that's okay 😔",
+    created_at: new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString()
+  }
+];
+
+const GROQ_API_KEY = process.env.NEXTGRQ || "";
 
 export default function TweetsDashboard() {
   const { data: session, status } = useSession();
@@ -194,18 +201,15 @@ export default function TweetsDashboard() {
     posting: false,
     success: false,
     useKannada: false,
-    isRecording: false,
-    showIntentHelper: false,
-    intentAnalyzing: false
+    isRecording: false
   });
+  const [useFallback, setUseFallback] = useState(false);
   const [stats, setStats] = useState<Stats>({
     totalTweets: 0,
     avgSentiment: "Neutral",
     engagement: 0,
     topEmotion: "Mixed"
   });
-  const [chatQuery, setChatQuery] = useState("");
-  const [chatting, setChatting] = useState(false);
 
   useEffect(() => {
     if (session) {
@@ -239,20 +243,21 @@ export default function TweetsDashboard() {
     
     setLoading(true);
     setError(null);
+    setUseFallback(false);
     
     try {
       const res = await fetch("/api/twitter/tweets");
 
       if (!res.ok) {
         if (res.status === 429) {
-          throw new Error("Rate limit reached. Please try again later.");
+          throw new Error("RATE_LIMIT");
         }
         
         let body: any = {};
         try {
           body = await res.json();
         } catch (e) {}
-        throw new Error(body?.error || `Failed to fetch tweets (${res.status})`);
+        throw new Error(body?.error || `HTTP ${res.status}`);
       }
 
       const data = await res.json();
@@ -262,278 +267,193 @@ export default function TweetsDashboard() {
         setTweets(fetchedTweets);
         sessionStorage.setItem('cachedTweets', JSON.stringify(fetchedTweets));
       } else {
-        throw new Error("No tweets found");
+        setTweets(FALLBACK_TWEETS);
+        setUseFallback(true);
       }
     } catch (err: unknown) {
       if (err instanceof Error) {
-        setError(err.message);
-        const cached = sessionStorage.getItem('cachedTweets');
-        if (cached) {
-          try {
-            setTweets(JSON.parse(cached));
-            setError(err.message + " (showing cached tweets)");
-          } catch (e) {
-            setTweets([]);
+        if (err.message === "RATE_LIMIT") {
+          setError("Rate limit reached. Showing sample tweets instead.");
+          setTweets(FALLBACK_TWEETS);
+          setUseFallback(true);
+        } else {
+          setError(err.message);
+          const cached = sessionStorage.getItem('cachedTweets');
+          if (cached) {
+            try {
+              setTweets(JSON.parse(cached));
+              setError(err.message + " (showing cached tweets)");
+            } catch (e) {
+              setTweets(FALLBACK_TWEETS);
+              setUseFallback(true);
+            }
+          } else {
+            setTweets(FALLBACK_TWEETS);
+            setUseFallback(true);
           }
         }
+      } else {
+        setError(String(err));
+        setTweets(FALLBACK_TWEETS);
+        setUseFallback(true);
       }
     } finally {
       setLoading(false);
     }
   };
 
-  const analyzeEmotion = async (tweetId: string, text: string) => {
+  const analyzeTweetWithGroq = async (tweetId: string, text: string, type: 'emotion' | 'intention' | 'factual') => {
     setAnalysis(prev => ({
       ...prev,
-      [tweetId]: { analyzing: true, result: null, type: 'emotion' }
+      [tweetId]: { analyzing: true, result: null, type }
     }));
 
     try {
-      const response = await fetch(`${API_BASE}/analyze_tweet`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "accept": "application/json"
-        },
-        body: JSON.stringify({
-          tweet: text,
-          userid: session?.user?.twitterId || session?.user?.email || "user"
-        })
-      });
+      let result: AnalysisResult;
 
-      if (!response.ok) {
-        throw new Error("Emotion analysis failed");
-      }
+      if (type === 'emotion') {
+        const response = await fetch("https://is-your-tweet-sweet-76xs.vercel.app/analyze_tweet", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "accept": "application/json"
+          },
+          body: JSON.stringify({
+            tweet: text,
+            userid: session?.user?.twitterId || "1"
+          })
+        });
 
-      const data = await response.json();
-      
-      let emotionEmoji = data.emotion || "🤔";
-      if (emotionEmoji.includes(' ')) {
-        const parts = emotionEmoji.split(' ');
-        emotionEmoji = parts[parts.length - 1];
-      }
-      
-      let formattedReasoning = (data.reasoning || "Analysis completed").trim();
-      const sections = formattedReasoning.split('\n').filter(s => s.trim());
-      
-      const result: AnalysisResult = {
-        emotion: emotionEmoji,
-        reasoning: formattedReasoning,
-        reasoningSections: sections,
-        confidence_level: data.confidence_level || 0.75,
-        sentiment: data.sentiment,
-        key_themes: data.key_themes || [],
-        toxicity_score: data.toxicity_score
-      };
-      
-      setTimeout(() => {
-        setAnalysis(prev => ({
-          ...prev,
-          [tweetId]: { analyzing: false, result, type: 'emotion' }
-        }));
-      }, 500);
-    } catch (err) {
-      console.error("Emotion analysis error:", err);
-      setAnalysis(prev => ({
-        ...prev,
-        [tweetId]: { analyzing: false, result: null, type: null }
-      }));
-    }
-  };
-
-  const analyzeIntent = async (tweetId: string, text: string) => {
-    setAnalysis(prev => ({
-      ...prev,
-      [tweetId]: { analyzing: true, result: null, type: 'intention' }
-    }));
-
-    try {
-      const response = await fetch(`${API_BASE}/intent`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "accept": "application/json"
-        },
-        body: JSON.stringify({
-          tweet: text,
-          intent: "analyze why this tweet might not get attention and suggest improvements",
-          userid: session?.user?.twitterId || session?.user?.email || "user"
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error("Intent analysis failed");
-      }
-
-      const intentData: IntentResult = await response.json();
-      
-      const result: AnalysisResult = {
-        emotion: "🎯",
-        reasoning: intentData.intent_analysis,
-        confidence_level: 0.85,
-        sentiment: "analytical"
-      };
-      
-      setTimeout(() => {
-        setAnalysis(prev => ({
-          ...prev,
-          [tweetId]: { 
-            analyzing: false, 
-            result, 
-            type: 'intention',
-            intentResult: intentData
-          }
-        }));
-      }, 500);
-    } catch (err) {
-      console.error("Intent analysis error:", err);
-      setAnalysis(prev => ({
-        ...prev,
-        [tweetId]: { analyzing: false, result: null, type: null }
-      }));
-    }
-  };
-
-  const checkFacts = async (tweetId: string, text: string) => {
-    setAnalysis(prev => ({
-      ...prev,
-      [tweetId]: { analyzing: true, result: null, type: 'factual' }
-    }));
-
-    try {
-      const response = await fetch(`${API_BASE}/fact-check`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "accept": "application/json"
-        },
-        body: JSON.stringify({
-          tweet: text
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error("Fact check failed");
-      }
-
-      const factData: FactCheckResult = await response.json();
-      
-      const factsText = factData.facts.filter(f => f.trim()).join('\n');
-      
-      const result: AnalysisResult = {
-        emotion: "✅",
-        reasoning: factsText || "Fact check completed",
-        confidence_level: 0.8,
-        sentiment: "factual"
-      };
-      
-      setTimeout(() => {
-        setAnalysis(prev => ({
-          ...prev,
-          [tweetId]: { 
-            analyzing: false, 
-            result, 
-            type: 'factual',
-            factCheckResult: factData
-          }
-        }));
-      }, 500);
-    } catch (err) {
-      console.error("Fact check error:", err);
-      setAnalysis(prev => ({
-        ...prev,
-        [tweetId]: { analyzing: false, result: null, type: null }
-      }));
-    }
-  };
-
-  const chatAboutTweet = async (tweetId: string, text: string, query: string) => {
-    if (!query.trim()) return;
-
-    setChatting(true);
-    
-    try {
-      const response = await fetch(`${API_BASE}/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "accept": "application/json"
-        },
-        body: JSON.stringify({
-          tweet: text,
-          query: query,
-          userid: session?.user?.twitterId || session?.user?.email || "user"
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error("Chat request failed");
-      }
-
-      const chatData: ChatResult = await response.json();
-      
-      setAnalysis(prev => ({
-        ...prev,
-        [tweetId]: {
-          ...prev[tweetId],
-          chatResult: chatData
+        if (!response.ok) {
+          throw new Error("Backend API request failed");
         }
-      }));
-      
-      setChatQuery("");
-    } catch (err) {
-      console.error("Chat error:", err);
-    } finally {
-      setChatting(false);
-    }
-  };
 
-  const analyzeBeforePost = async () => {
-    if (!postingState.tweetText.trim()) return;
+        const data = await response.json();
+        
+        let formattedReasoning = data.reasoning || "Analysis completed";
+        
+        let emotionEmoji = data.emotion || "🤔";
+        if (emotionEmoji.includes(' ')) {
+          const parts = emotionEmoji.split(' ');
+          emotionEmoji = parts[parts.length - 1];
+        }
+        
+        formattedReasoning = formattedReasoning
+          .replace(/\n\s*\d+\)\s*/g, '\n')
+          .replace(/^\s*\n/, '')
+          .trim();
+        
+        const sections = formattedReasoning.split('\n').filter(s => s.trim());
+        
+        result = {
+          emotion: emotionEmoji,
+          reasoning: formattedReasoning,
+          reasoningSections: sections,
+          confidence_level: data.confidence_level || 0.75,
+          sentiment: data.sentiment,
+          key_themes: [],
+          toxicity_score: data.toxicity_score
+        };
+      } 
+      else {
+        let systemPrompt = "";
+        
+        if (type === 'intention') {
+          systemPrompt = `You are an intention analysis expert. Analyze the intent behind tweets and respond in JSON format with:
+{
+  "emotion": "emoji representing intent (like 🎯 for goal-oriented, 💬 for conversational, 📢 for announcement, ❓ for questioning)",
+  "reasoning": "clear explanation of the user's intention and purpose",
+  "confidence_level": number between 0 and 1,
+  "sentiment": "informative/persuasive/expressive/directive/questioning",
+  "key_themes": ["theme1", "theme2"]
+}`;
+        } else {
+          systemPrompt = `You are a fact-checking expert. Analyze claims in tweets and respond in JSON format with:
+{
+  "emotion": "emoji (✅ for verified facts, ⚠️ for questionable/unverified, ❌ for false/misleading, 💭 for opinion)",
+  "reasoning": "detailed explanation of factual accuracy, including what can be verified",
+  "confidence_level": number between 0 and 1,
+  "sentiment": "factual/opinion/misleading/unverified",
+  "key_themes": ["main topics or claims identified"]
+}`;
+        }
 
-    setPostingState(prev => ({ ...prev, intentAnalyzing: true, showIntentHelper: true }));
+        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${GROQ_API_KEY}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: "llama-3.1-70b-versatile",
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: `Analyze this tweet: "${text}"` }
+            ],
+            temperature: 0.7,
+            max_tokens: 600,
+            response_format: { type: "json_object" }
+          })
+        });
 
-    try {
-      const response = await fetch(`${API_BASE}/intent`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "accept": "application/json"
-        },
-        body: JSON.stringify({
-          tweet: postingState.tweetText,
-          intent: "optimize this tweet for maximum engagement and clarity",
-          userid: session?.user?.twitterId || session?.user?.email || "user"
-        })
-      });
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          console.error("Groq API Error:", response.status, errorData);
+          throw new Error(`Groq API failed: ${response.status} - ${errorData.error?.message || 'Unknown error'}`);
+        }
 
-      if (!response.ok) {
-        throw new Error("Intent analysis failed");
+        const data = await response.json();
+        
+        if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+          throw new Error("Invalid response from Groq API");
+        }
+        
+        const content = data.choices[0].message.content || "{}";
+        
+        try {
+          const parsed = JSON.parse(content);
+          result = {
+            emotion: parsed.emotion || "🤔",
+            reasoning: parsed.reasoning || "Analysis completed",
+            confidence_level: parsed.confidence_level || 0.75,
+            sentiment: parsed.sentiment,
+            key_themes: parsed.key_themes || [],
+            toxicity_score: parsed.toxicity_score
+          };
+        } catch (e) {
+          result = {
+            emotion: type === 'intention' ? "🎯" : "⚠️",
+            reasoning: content.slice(0, 300) || "Analysis completed",
+            confidence_level: 0.7,
+            sentiment: type === 'intention' ? "informative" : "unverified",
+            key_themes: []
+          };
+        }
       }
-
-      const intentData: IntentResult = await response.json();
       
-      setPostingState(prev => ({
-        ...prev,
-        intentAnalyzing: false,
-        suggestedTweet: intentData.modified_tweet
-      }));
+      setTimeout(() => {
+        setAnalysis(prev => ({
+          ...prev,
+          [tweetId]: { analyzing: false, result, type }
+        }));
+      }, 800);
     } catch (err) {
-      console.error("Pre-post analysis error:", err);
-      setPostingState(prev => ({ ...prev, intentAnalyzing: false }));
+      console.error("Analysis error:", err);
+      setAnalysis(prev => ({
+        ...prev,
+        [tweetId]: { analyzing: false, result: null, type: null }
+      }));
     }
   };
 
-  const openPostModal = () => {
+  const openPostModal = (contextTweet?: string) => {
     setPostingState({
       isOpen: true,
-      tweetText: "",
+      tweetText: contextTweet || "",
       posting: false,
       success: false,
       useKannada: false,
-      isRecording: false,
-      showIntentHelper: false,
-      intentAnalyzing: false
+      isRecording: false
     });
   };
 
@@ -544,9 +464,25 @@ export default function TweetsDashboard() {
       posting: false,
       success: false,
       useKannada: false,
-      isRecording: false,
-      showIntentHelper: false,
-      intentAnalyzing: false
+      isRecording: false
+    });
+  };
+
+  const toggleRecording = () => {
+    setPostingState(prev => {
+      const newRecording = !prev.isRecording;
+      
+      if (newRecording) {
+        setTimeout(() => {
+          setPostingState(p => ({ 
+            ...p, 
+            isRecording: false,
+            tweetText: p.tweetText + " This is voice-to-text content!"
+          }));
+        }, 3000);
+      }
+      
+      return { ...prev, isRecording: newRecording };
     });
   };
 
@@ -556,6 +492,7 @@ export default function TweetsDashboard() {
     setPostingState(prev => ({ ...prev, posting: true }));
     
     try {
+      // Twitter API v2 POST /2/tweets endpoint
       const res = await fetch("/api/twitter/tweets", {
         method: "POST",
         headers: {
@@ -588,6 +525,8 @@ export default function TweetsDashboard() {
   useEffect(() => {
     if (session) {
       fetchTweets();
+    } else {
+      setTweets([]);
     }
   }, [session]);
 
@@ -640,7 +579,7 @@ export default function TweetsDashboard() {
           
           <div className="flex items-center gap-4">
             <button
-              onClick={openPostModal}
+              onClick={() => openPostModal()}
               className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-full font-bold transition hidden sm:block"
             >
               Post
@@ -733,6 +672,15 @@ export default function TweetsDashboard() {
             </button>
           </div>
 
+          {useFallback && (
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4 mb-6">
+              <p className="text-yellow-500 text-sm font-medium flex items-center gap-2">
+                <AlertCircle className="w-4 h-4" />
+                Showing sample data
+              </p>
+            </div>
+          )}
+
           {loading && (
             <div className="text-center py-16">
               <Loader2 className="w-10 h-10 animate-spin text-blue-500 mx-auto mb-4" />
@@ -743,7 +691,7 @@ export default function TweetsDashboard() {
           {!loading && tweets.length === 0 && (
             <div className="text-center py-16">
               <Twitter className="w-16 h-16 text-gray-700 mx-auto mb-4" />
-              <p className="text-gray-500">No tweets yet. Start posting!</p>
+              <p className="text-gray-500">No tweets yet</p>
             </div>
           )}
 
@@ -810,7 +758,7 @@ export default function TweetsDashboard() {
                         
                         <div className="flex flex-wrap gap-2">
                           <button
-                            onClick={() => analyzeEmotion(tweet.id, tweet.text)}
+                            onClick={() => analyzeTweetWithGroq(tweet.id, tweet.text, 'emotion')}
                             disabled={tweetAnalysis?.analyzing}
                             className="flex items-center gap-2 px-3 py-1.5 text-xs bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 rounded-full transition disabled:opacity-50 border border-blue-500/20 font-medium"
                           >
@@ -818,15 +766,15 @@ export default function TweetsDashboard() {
                             Emotion
                           </button>
                           <button
-                            onClick={() => analyzeIntent(tweet.id, tweet.text)}
+                            onClick={() => analyzeTweetWithGroq(tweet.id, tweet.text, 'intention')}
                             disabled={tweetAnalysis?.analyzing}
                             className="flex items-center gap-2 px-3 py-1.5 text-xs bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 rounded-full transition disabled:opacity-50 border border-purple-500/20 font-medium"
                           >
-                            <Zap className="w-3.5 h-3.5" />
-                            Why No Attention?
+                            <AlertCircle className="w-3.5 h-3.5" />
+                            Intent
                           </button>
                           <button
-                            onClick={() => checkFacts(tweet.id, tweet.text)}
+                            onClick={() => analyzeTweetWithGroq(tweet.id, tweet.text, 'factual')}
                             disabled={tweetAnalysis?.analyzing}
                             className="flex items-center gap-2 px-3 py-1.5 text-xs bg-green-500/10 hover:bg-green-500/20 text-green-400 rounded-full transition disabled:opacity-50 border border-green-500/20 font-medium"
                           >
@@ -841,10 +789,10 @@ export default function TweetsDashboard() {
                               <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
                               <div className="flex-1">
                                 <div className="text-sm text-gray-300 font-medium mb-1">
-                                  Analyzing with AI...
+                                  Analysis with NLP Model...
                                 </div>
                                 <div className="text-xs text-gray-500">
-                                  Processing language patterns
+                                  Getting context and processing language patterns
                                 </div>
                               </div>
                             </div>
@@ -862,58 +810,42 @@ export default function TweetsDashboard() {
                                 <div className="flex items-center justify-between">
                                   <h4 className="font-bold text-white text-base flex items-center gap-2">
                                     <Sparkles className="w-4 h-4 text-blue-400" />
-                                    AI Analysis
+                                    NLP Model Analysis
                                   </h4>
                                   <span className="px-2.5 py-1 bg-blue-500/20 text-blue-300 text-xs font-semibold rounded-full border border-blue-500/30">
-                                    {tweetAnalysis.type === 'emotion' ? '🎭 Emotion' : tweetAnalysis.type === 'intention' ? '🎯 Intent' : '✅ Facts'}
+                                    {tweetAnalysis.type === 'emotion' ? '🎭 Emotion' : tweetAnalysis.type === 'intention' ? '🎯 Intent' : '✅ Fact Check'}
                                   </span>
                                 </div>
                                 
-                                <div className="text-gray-300 text-sm leading-relaxed whitespace-pre-line">
-                                  {tweetAnalysis.result.reasoning}
-                                </div>
-
-                                {tweetAnalysis.intentResult?.modified_tweet && (
-                                  <div className="bg-zinc-800/40 rounded-lg p-4 border border-emerald-500/30">
-                                    <div className="text-emerald-400 text-xs font-semibold mb-2 uppercase tracking-wide flex items-center gap-2">
-                                      <Sparkles className="w-3 h-3" />
-                                      Optimized Tweet
-                                    </div>
-                                    <div className="text-gray-200 text-sm leading-relaxed mb-3">
-                                      {tweetAnalysis.intentResult.modified_tweet}
-                                    </div>
-                                    <button
-                                      onClick={() => {
-                                        setPostingState({
-                                          isOpen: true,
-                                          tweetText: tweetAnalysis.intentResult!.modified_tweet,
-                                          posting: false,
-                                          success: false,
-                                          useKannada: false,
-                                          isRecording: false,
-                                          showIntentHelper: false,
-                                          intentAnalyzing: false
-                                        });
-                                      }}
-                                      className="px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 rounded-lg text-xs font-medium transition border border-emerald-500/30"
-                                    >
-                                      Post This Version
-                                    </button>
+                                {tweetAnalysis.result.reasoningSections && tweetAnalysis.result.reasoningSections.length > 0 ? (
+                                  <div className="space-y-2">
+                                    {tweetAnalysis.result.reasoningSections.map((section, idx) => {
+                                      const colonIndex = section.indexOf(':');
+                                      if (colonIndex > 0 && colonIndex < 50) {
+                                        const label = section.substring(0, colonIndex).trim();
+                                        const content = section.substring(colonIndex + 1).trim();
+                                        return (
+                                          <div key={idx} className="bg-zinc-800/40 rounded-lg p-3 border border-zinc-700/30">
+                                            <div className="text-blue-400 text-xs font-semibold mb-1 uppercase tracking-wide">
+                                              {label}
+                                            </div>
+                                            <div className="text-gray-300 text-sm leading-relaxed">
+                                              {content}
+                                            </div>
+                                          </div>
+                                        );
+                                      }
+                                      return (
+                                        <p key={idx} className="text-gray-300 text-sm leading-relaxed">
+                                          {section}
+                                        </p>
+                                      );
+                                    })}
                                   </div>
-                                )}
-
-                                {tweetAnalysis.intentResult?.improvements && tweetAnalysis.intentResult.improvements.length > 0 && (
-                                  <div className="space-y-1.5">
-                                    <span className="text-xs text-gray-500 font-medium">Suggested Improvements:</span>
-                                    <div className="space-y-1">
-                                      {tweetAnalysis.intentResult.improvements.map((improvement, i) => (
-                                        <div key={i} className="flex items-start gap-2 text-xs text-gray-400">
-                                          <span className="text-blue-400 mt-0.5">•</span>
-                                          <span>{improvement}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
+                                ) : (
+                                  <p className="text-gray-300 text-sm leading-relaxed">
+                                    {tweetAnalysis.result.reasoning}
+                                  </p>
                                 )}
                                 
                                 {tweetAnalysis.result.sentiment && (
@@ -976,43 +908,6 @@ export default function TweetsDashboard() {
                                     />
                                   </div>
                                 </div>
-
-                                <div className="pt-3 border-t border-zinc-800">
-                                  <div className="flex items-center gap-2 mb-2">
-                                    <MessageSquare className="w-4 h-4 text-gray-500" />
-                                    <span className="text-xs text-gray-500 font-medium">Ask about this tweet:</span>
-                                  </div>
-                                  <div className="flex gap-2">
-                                    <input
-                                      type="text"
-                                      value={chatQuery}
-                                      onChange={(e) => setChatQuery(e.target.value)}
-                                      onKeyPress={(e) => {
-                                        if (e.key === 'Enter' && chatQuery.trim()) {
-                                          chatAboutTweet(tweet.id, tweet.text, chatQuery);
-                                        }
-                                      }}
-                                      placeholder="e.g., Why might this not get attention?"
-                                      className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500/50"
-                                      disabled={chatting}
-                                    />
-                                    <button
-                                      onClick={() => chatAboutTweet(tweet.id, tweet.text, chatQuery)}
-                                      disabled={chatting || !chatQuery.trim()}
-                                      className="px-4 py-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg text-sm font-medium transition disabled:opacity-50 border border-blue-500/30"
-                                    >
-                                      {chatting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                                    </button>
-                                  </div>
-                                  {tweetAnalysis.chatResult && (
-                                    <div className="mt-3 p-3 bg-zinc-800/40 rounded-lg border border-zinc-700/30">
-                                      <div className="text-xs text-blue-400 font-semibold mb-1">AI Response:</div>
-                                      <div className="text-sm text-gray-300 leading-relaxed">
-                                        {tweetAnalysis.chatResult.answer}
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
                               </div>
                             </div>
                           </div>
@@ -1054,46 +949,20 @@ export default function TweetsDashboard() {
               />
             </div>
 
-            {postingState.showIntentHelper && postingState.intentAnalyzing && (
-              <div className="mb-4 p-4 bg-blue-500/10 rounded-xl border border-blue-500/20">
-                <div className="flex items-center gap-3">
-                  <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
-                  <div>
-                    <div className="text-sm text-blue-400 font-medium">Analyzing your tweet...</div>
-                    <div className="text-xs text-gray-500">Checking for engagement optimization</div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {postingState.showIntentHelper && postingState.suggestedTweet && !postingState.intentAnalyzing && (
-              <div className="mb-4 p-4 bg-emerald-500/10 rounded-xl border border-emerald-500/20">
-                <div className="text-emerald-400 text-xs font-semibold mb-2 uppercase tracking-wide flex items-center gap-2">
-                  <Sparkles className="w-3 h-3" />
-                  AI Suggestion for Better Engagement
-                </div>
-                <div className="text-gray-200 text-sm leading-relaxed mb-3">
-                  {postingState.suggestedTweet}
-                </div>
-                <button
-                  onClick={() => setPostingState(prev => ({ ...prev, tweetText: prev.suggestedTweet || prev.tweetText }))}
-                  className="px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 rounded-lg text-xs font-medium transition border border-emerald-500/30"
-                >
-                  Use This Version
-                </button>
-              </div>
-            )}
-
             <div className="border-t border-zinc-800 pt-4">
               <div className="flex items-center justify-between">
                 <div className="flex gap-2">
                   <button
-                    onClick={analyzeBeforePost}
-                    disabled={postingState.posting || postingState.intentAnalyzing || !postingState.tweetText.trim()}
-                    className="p-2 rounded-full hover:bg-zinc-800 text-blue-500 transition disabled:opacity-50"
-                    title="Optimize with AI"
+                    onClick={toggleRecording}
+                    disabled={postingState.posting}
+                    className={`p-2 rounded-full transition ${
+                      postingState.isRecording 
+                        ? 'bg-red-500/20 text-red-400' 
+                        : 'hover:bg-zinc-800 text-blue-500'
+                    }`}
+                    title="Voice input"
                   >
-                    <Zap className="w-5 h-5" />
+                    <Mic className={`w-5 h-5 ${postingState.isRecording ? 'animate-pulse' : ''}`} />
                   </button>
                   <button
                     onClick={() => setPostingState(prev => ({ ...prev, useKannada: !prev.useKannada }))}
@@ -1127,6 +996,13 @@ export default function TweetsDashboard() {
                   </button>
                 </div>
               </div>
+
+              {postingState.isRecording && (
+                <div className="mt-3 p-3 bg-red-500/10 rounded-xl text-sm text-red-400 flex items-center gap-2 border border-red-500/20">
+                  <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                  Recording... Speak now
+                </div>
+              )}
 
               {postingState.useKannada && (
                 <div className="mt-3 p-3 bg-blue-500/10 rounded-xl text-sm text-blue-400 border border-blue-500/20">

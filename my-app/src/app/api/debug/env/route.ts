@@ -7,5 +7,6 @@ export async function GET() {
     TWITTER_CLIENT_SECRET_set: !!process.env.TWITTER_CLIENT_SECRET,
     NEXTAUTH_SECRET_set: !!process.env.NEXTAUTH_SECRET,
     NEXTAUTH_URL: process.env.NEXTAUTH_URL || null,
+    NEXTGRQ: process.env.NEXTGRQ || null
   });
 }

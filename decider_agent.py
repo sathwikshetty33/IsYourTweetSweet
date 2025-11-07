@@ -5,9 +5,7 @@ from langchain.prompts import ChatPromptTemplate
 from langchain.output_parsers import PydanticOutputParser
 from dotenv import load_dotenv
 load_dotenv()
-# -------------------------
-# 🧱 Pydantic Models
-# -------------------------
+
 
 class DeciderInput(BaseModel):
     tweet: str = Field(..., description="The tweet text that needs to be analyzed.")
@@ -18,15 +16,10 @@ class DeciderOutput(BaseModel):
     topics: List[str] = Field(default_factory=list, description="List of topics or keywords to search if external context is needed.")
 
 
-# -------------------------
-# ⚙️ LLM + Parser Setup
-# -------------------------
-
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
-# Use PydanticOutputParser for structured LLM output
+
 output_parser = PydanticOutputParser(pydantic_object=DeciderOutput)
 
-# Create prompt template
 prompt = ChatPromptTemplate.from_template(
     """
     You are a fact-verification decision agent.
@@ -45,9 +38,7 @@ prompt = ChatPromptTemplate.from_template(
 )
 
 
-# -------------------------
-# 🧠 Decider Function
-# -------------------------
+
 
 def decide_external_context(input_data: DeciderInput) -> DeciderOutput:
     """

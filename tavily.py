@@ -5,13 +5,12 @@ from langchain.chains import LLMChain
 import os
 from dotenv import load_dotenv
 load_dotenv()
-# Initialize Tavily (fetch top 5 results)
+
+
 tavily = TavilySearchResults(k=5)
 
-# Initialize Groq LLM (choose a fast and accurate model)
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
 
-# Prompt template for factual summarization
 summary_prompt = PromptTemplate(
     input_variables=["topic", "articles"],
     template=(
@@ -22,8 +21,6 @@ summary_prompt = PromptTemplate(
         "Return your output as bullet points summarizing verified information."
     )
 )
-
-# Build summarization chain
 summarize_chain = LLMChain(llm=llm, prompt=summary_prompt)
 
 def verify_topic_relevance(topic: str) -> dict:
@@ -32,14 +29,8 @@ def verify_topic_relevance(topic: str) -> dict:
     summarizes them factually using Groq.
     """
     print(f"\n[INFO] Fetching real-time data for topic: {topic}\n")
-
-    # 1. Fetch Tavily search results
     search_results = tavily.run(topic)
-
-    # 2. Summarize via Groq LLM
     summary = summarize_chain.run(topic=topic, articles=search_results)
-
-    # 3. Return structured response
     return {
         "topic": topic,
         "summarized_articles": summary,

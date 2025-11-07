@@ -2,8 +2,8 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from typing import Optional
 from langchain_groq import ChatGroq
-from langchain.prompts import ChatPromptTemplate
-from langchain.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
 from dotenv import load_dotenv
 import sqlite3
 import json
@@ -174,7 +174,7 @@ async def analyze_tweet(tweet_data: TweetInput):
         format_instructions=format_instructions
     )
 
-    response = llm(formatted_prompt.to_messages())
+    response = llm.invoke(formatted_prompt.to_messages())
 
     try:
         parsed_output: EmotionAnalysis = output_parser.parse(response.content)
@@ -191,7 +191,7 @@ async def analyze_tweet(tweet_data: TweetInput):
         emotion=parsed_output.emotion,
         reasoning=parsed_output.reasoning
     )
-    update_response = llm(update_prompt.to_messages())
+    update_response = llm.invoke(update_prompt.to_messages())
     new_summary = update_response.content.strip()
     update_user_summary(tweet_data.userid, new_summary)
 
@@ -211,7 +211,7 @@ async def modify_tweet(intent_data: IntentInput):
         summary=user_summary,
         tweet=intent_data.tweet
     )
-    response = llm(prompt.to_messages())
+    response = llm.invoke(prompt.to_messages())
     modified_tweet = response.content.strip()
     return {"modified_tweet": modified_tweet}
 
@@ -281,7 +281,7 @@ Answer clearly and naturally:
     )
 
     # --- Step 3: Get response from Groq ---
-    response = llm(formatted_prompt.to_messages())
+    response = llm.invoke(formatted_prompt.to_messages())
 
     # --- Step 4: Return structured response ---
     return ChatResponse(answer=response.content.strip())

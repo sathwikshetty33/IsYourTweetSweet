@@ -1,8 +1,8 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from langchain_groq import ChatGroq
-from langchain.prompts import ChatPromptTemplate
-from langchain.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -51,7 +51,7 @@ def decide_external_context(input_data: DeciderInput) -> DeciderOutput:
         format_instructions=output_parser.get_format_instructions()
     )
 
-    response = llm(formatted_prompt.to_messages())
+    response = llm.invoke(formatted_prompt.to_messages())
     parsed_output = output_parser.parse(response.content)
 
     return parsed_output

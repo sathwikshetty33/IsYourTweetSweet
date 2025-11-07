@@ -1,39 +1,50 @@
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_groq import ChatGroq
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-import os
+from langchain_core.prompts import ChatPromptTemplate
 from dotenv import load_dotenv
+
 load_dotenv()
 
+# Initialize Tavily (top 5 results)
+tavily = TavilySearchResults(max_results=5)
 
-tavily = TavilySearchResults(k=5)
-
+# Initialize Groq LLM
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
 
-summary_prompt = PromptTemplate(
-    input_variables=["topic", "articles"],
-    template=(
-        "You are a fact-verification assistant. Given the topic: '{topic}', "
-        "summarize the following web search results into 5 concise, verifiable factual points. "
-        "Avoid speculation or opinions. Use objective language.\n\n"
-        "Search Results:\n{articles}\n\n"
-        "Return your output as bullet points summarizing verified information."
-    )
+# Prompt for summarizing factual information
+summary_prompt = ChatPromptTemplate.from_template(
+    """
+You are a **fact-verification assistant**.
+
+Given the topic: "{topic}", summarize the following **web search results**
+into **5 concise and verifiable factual points**.
+Avoid speculation, opinions, or emotional tone — only objective facts.
+
+Search Results:
+{articles}
+
+Return only bullet points with factual summaries.
+"""
 )
-summarize_chain = LLMChain(llm=llm, prompt=summary_prompt)
 
 def verify_topic_relevance(topic: str) -> dict:
     """
-    Fetches top 5 real-time web results for a given topic using Tavily and
-    summarizes them factually using Groq.
+    Fetch top 5 real-time web results for a given topic using Tavily,
+    and summarize them factually using Groq.
     """
-    print(f"\n[INFO] Fetching real-time data for topic: {topic}\n")
-    search_results = tavily.run(topic)
-    summary = summarize_chain.run(topic=topic, articles=search_results)
+    print(f"[INFO] Fetching real-time data for topic: {topic}")
+
+    # Step 1: Run Tavily Search
+    search_results = tavily.invoke({"query": topic})
+
+    # Step 2: Summarize using Groq
+    messages = summary_prompt.format_messages(topic=topic, articles=search_results)
+    response = llm.invoke(messages)
+
+    summary = response.content.strip()
+
     return {
         "topic": topic,
         "summarized_articles": summary,
         "raw_results": search_results
     }
-

@@ -2,7 +2,7 @@
 
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useEffect, useState } from "react";
-import { Twitter, LogOut, RefreshCw, Loader2, Sparkles, AlertCircle, PenLine, Send, Mic, Keyboard, X, Heart, Repeat2, MessageCircle, BarChart3, TrendingUp, Users, Activity, Target, CheckCircle, MessageSquare } from "lucide-react";
+import { Twitter, LogOut, RefreshCw, Loader2, Sparkles, AlertCircle, PenLine, Send, Mic, X, Heart, Repeat2, MessageCircle, BarChart3, TrendingUp, Users, Activity, Target, CheckCircle, MessageSquare } from "lucide-react";
 
 type Tweet = {
   id: string;
@@ -39,10 +39,15 @@ type PostingState = {
   applyingIntent: boolean;
 };
 
+type ChatMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
 type ChatState = {
   isOpen: boolean;
   query: string;
-  response: string;
+  messages: ChatMessage[];
   loading: boolean;
 };
 
@@ -100,7 +105,7 @@ export default function TweetsDashboard() {
   const [chatState, setChatState] = useState<ChatState>({
     isOpen: false,
     query: "",
-    response: "",
+    messages: [],
     loading: false
   });
   const [useFallback, setUseFallback] = useState(false);
@@ -168,28 +173,15 @@ export default function TweetsDashboard() {
         setUseFallback(true);
       }
     } catch (err: unknown) {
-      if (err instanceof Error) {
-        if (err.message === "RATE_LIMIT") {
+      const cached = sessionStorage.getItem('cachedTweets');
+      if (cached) {
+        try {
+          setTweets(JSON.parse(cached));
+        } catch (e) {
           setTweets(FALLBACK_TWEETS);
           setUseFallback(true);
-        } else {
-          setError(err.message);
-          const cached = sessionStorage.getItem('cachedTweets');
-          if (cached) {
-            try {
-              setTweets(JSON.parse(cached));
-              setError(err.message + " (showing cached tweets)");
-            } catch (e) {
-              setTweets(FALLBACK_TWEETS);
-              setUseFallback(true);
-            }
-          } else {
-            setTweets(FALLBACK_TWEETS);
-            setUseFallback(true);
-          }
         }
       } else {
-        setError(String(err));
         setTweets(FALLBACK_TWEETS);
         setUseFallback(true);
       }
@@ -406,7 +398,6 @@ export default function TweetsDashboard() {
       }));
     } catch (err) {
       console.error("Intent error:", err);
-      setError(err instanceof Error ? err.message : "Failed to apply intent");
       setPostingState(prev => ({ ...prev, applyingIntent: false }));
     }
   };
@@ -415,7 +406,6 @@ export default function TweetsDashboard() {
     if (!postingState.tweetText.trim()) return;
 
     setPostingState(prev => ({ ...prev, posting: true }));
-    setError(null);
 
     try {
       const res = await fetch("/api/twitter/tweets", {
@@ -447,7 +437,6 @@ export default function TweetsDashboard() {
       }, 1500);
     } catch (err) {
       console.error("Post error:", err);
-      setError(err instanceof Error ? err.message : "Failed to post tweet");
       setPostingState(prev => ({ ...prev, posting: false }));
     }
   };
@@ -457,7 +446,7 @@ export default function TweetsDashboard() {
     setChatState({
       isOpen: true,
       query: "",
-      response: "",
+      messages: [],
       loading: false
     });
   };
@@ -466,7 +455,7 @@ export default function TweetsDashboard() {
     setChatState({
       isOpen: false,
       query: "",
-      response: "",
+      messages: [],
       loading: false
     });
     setActiveChatTweet("");
@@ -475,7 +464,17 @@ export default function TweetsDashboard() {
   const sendChatQuery = async () => {
     if (!chatState.query.trim()) return;
     
-    setChatState(prev => ({ ...prev, loading: true }));
+    const userMessage: ChatMessage = {
+      role: 'user',
+      content: chatState.query
+    };
+    
+    setChatState(prev => ({ 
+      ...prev, 
+      messages: [...prev.messages, userMessage],
+      query: "",
+      loading: true 
+    }));
     
     try {
       const response = await fetch("https://is-your-tweet-sweet-ten.vercel.app/chat", {
@@ -497,16 +496,25 @@ export default function TweetsDashboard() {
 
       const data = await response.json();
       
+      const assistantMessage: ChatMessage = {
+        role: 'assistant',
+        content: data.answer || "No response received"
+      };
+      
       setChatState(prev => ({
         ...prev,
-        response: data.answer || "No response received",
+        messages: [...prev.messages, assistantMessage],
         loading: false
       }));
     } catch (err) {
       console.error("Chat error:", err);
+      const errorMessage: ChatMessage = {
+        role: 'assistant',
+        content: "Failed to get response. Please try again."
+      };
       setChatState(prev => ({
         ...prev,
-        response: "Failed to get response. Please try again.",
+        messages: [...prev.messages, errorMessage],
         loading: false
       }));
     }
@@ -539,10 +547,10 @@ export default function TweetsDashboard() {
             <Twitter className="w-10 h-10 text-white" />
           </div>
           <h1 className="text-3xl font-bold text-white mb-3">
-            Tweet Intelligence
+            IsYourTweetSweet
           </h1>
           <p className="text-gray-400 mb-8">
-            AI-powered tweet analysis with NLP Models
+            AI-powered tweet analysis with emotion detection
           </p>
           <button
             onClick={() => signIn("twitter")}
@@ -563,7 +571,7 @@ export default function TweetsDashboard() {
           <div className="flex items-center gap-4">
             <Twitter className="w-8 h-8 text-blue-500" />
             <h1 className="text-xl font-bold text-white hidden sm:block">
-              Tweet Intelligence
+              IsYourTweetSweet
             </h1>
           </div>
           
@@ -593,15 +601,6 @@ export default function TweetsDashboard() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
-        {/* {error && (
-          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6">
-            <p className="text-red-500 text-sm font-medium flex items-center gap-2">
-              <AlertCircle className="w-4 h-4" />
-              {error}
-            </p>
-          </div>
-        )} */}
-
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-6">
           <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 hover:border-zinc-700 transition">
             <div className="flex items-center justify-between mb-2">
@@ -661,15 +660,6 @@ export default function TweetsDashboard() {
               Refresh
             </button>
           </div>
-
-          {useFallback && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4 mb-6">
-              <p className="text-yellow-500 text-sm font-medium flex items-center gap-2">
-                <AlertCircle className="w-4 h-4" />
-                Showing sample data
-              </p>
-            </div>
-          )}
 
           {loading && (
             <div className="text-center py-16">
@@ -975,52 +965,77 @@ export default function TweetsDashboard() {
 
       {chatState.isOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col">
-            <div className="bg-zinc-900 border-b border-zinc-800 px-6 py-4 flex items-center justify-between">
-              <h3 className="text-xl font-bold text-white">Chat about Tweet</h3>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-3xl w-full h-[85vh] flex flex-col shadow-2xl">
+            <div className="bg-gradient-to-r from-zinc-900 to-zinc-800 border-b border-zinc-700 px-6 py-4 flex items-center justify-between rounded-t-2xl">
+              <div className="flex items-center gap-3">
+                <div className="bg-orange-500 rounded-full p-2">
+                  <MessageSquare className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Chat Assistant</h3>
+                  <p className="text-xs text-gray-400">Ask anything about this tweet</p>
+                </div>
+              </div>
               <button
                 onClick={closeChat}
-                className="p-2 hover:bg-zinc-800 rounded-full transition"
+                className="p-2 hover:bg-zinc-700 rounded-full transition"
               >
                 <X className="w-5 h-5 text-gray-400" />
               </button>
             </div>
 
-            <div className="flex-1 p-6 overflow-y-auto">
-              <div className="bg-zinc-800 border border-zinc-700 rounded-lg p-4 mb-4">
-                <p className="text-gray-300 text-sm">{activeChatTweet}</p>
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              <div className="bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700 rounded-xl p-4 shadow-lg">
+                <div className="flex items-start gap-3">
+                  <Twitter className="w-5 h-5 text-blue-400 mt-0.5 flex-shrink-0" />
+                  <p className="text-gray-200 text-sm leading-relaxed">{activeChatTweet}</p>
+                </div>
               </div>
 
-              {chatState.response && (
-                <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 mb-4">
-                  <p className="text-blue-100 text-sm leading-relaxed">{chatState.response}</p>
+              {chatState.messages.map((message, idx) => (
+                <div
+                  key={idx}
+                  className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-[80%] rounded-2xl px-4 py-3 ${
+                      message.role === 'user'
+                        ? 'bg-blue-500 text-white'
+                        : 'bg-zinc-800 text-gray-100 border border-zinc-700'
+                    }`}
+                  >
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+                  </div>
                 </div>
-              )}
+              ))}
 
               {chatState.loading && (
-                <div className="flex items-center gap-3 text-gray-400">
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span className="text-sm">Thinking...</span>
+                <div className="flex justify-start">
+                  <div className="bg-zinc-800 border border-zinc-700 rounded-2xl px-4 py-3 flex items-center gap-3">
+                    <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+                    <span className="text-sm text-gray-400">Thinking...</span>
+                  </div>
                 </div>
               )}
             </div>
 
-            <div className="border-t border-zinc-800 p-4">
-              <div className="flex gap-2">
+            <div className="border-t border-zinc-800 p-4 bg-zinc-900 rounded-b-2xl">
+              <div className="flex gap-3">
                 <input
                   type="text"
                   value={chatState.query}
                   onChange={(e) => setChatState(prev => ({ ...prev, query: e.target.value }))}
-                  onKeyPress={(e) => e.key === 'Enter' && sendChatQuery()}
-                  placeholder="Ask anything about this tweet..."
-                  className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && sendChatQuery()}
+                  placeholder="Type your message..."
+                  className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition"
+                  disabled={chatState.loading}
                 />
                 <button
                   onClick={sendChatQuery}
                   disabled={!chatState.query.trim() || chatState.loading}
-                  className="px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:bg-zinc-700 disabled:text-gray-500 text-white rounded-lg transition font-medium"
+                  className="px-5 py-3 bg-orange-500 hover:bg-orange-600 disabled:bg-zinc-700 disabled:text-gray-500 text-white rounded-xl transition font-medium shadow-lg hover:shadow-orange-500/20"
                 >
-                  <Send className="w-4 h-4" />
+                  <Send className="w-5 h-5" />
                 </button>
               </div>
             </div>

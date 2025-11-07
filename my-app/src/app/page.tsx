@@ -250,7 +250,7 @@ export default function TweetsDashboard() {
 
       if (!res.ok) {
         if (res.status === 429) {
-          throw new Error("");
+        
         }
         
         let body: any = {};

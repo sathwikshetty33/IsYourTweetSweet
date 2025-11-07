@@ -403,86 +403,114 @@ export default function TweetsDashboard() {
     }));
 
     try {
-      let systemPrompt = "";
-      
-      if (type === 'emotion') {
-        systemPrompt = `You are an emotion analysis expert. Analyze the emotional content of tweets and respond in JSON format with:
-{
-  "emotion": "emoji representing main emotion",
-  "reasoning": "brief explanation of the emotion detected",
-  "confidence_level": number between 0 and 1,
-  "sentiment": "positive/negative/neutral",
-  "key_themes": ["theme1", "theme2"]
-}`;
-      } else if (type === 'intention') {
-        systemPrompt = `You are an intention analysis expert. Analyze the intent behind tweets and respond in JSON format with:
-{
-  "emotion": "emoji representing intent",
-  "reasoning": "explanation of the user's intention",
-  "confidence_level": number between 0 and 1,
-  "sentiment": "informative/persuasive/expressive/directive",
-  "key_themes": ["theme1", "theme2"]
-}`;
-      } else {
-        systemPrompt = `You are a fact-checking expert. Analyze claims in tweets and respond in JSON format with:
-{
-  "emotion": "emoji (✓ for verified, ⚠️ for questionable, ✗ for false)",
-  "reasoning": "explanation of factual accuracy",
-  "confidence_level": number between 0 and 1,
-  "sentiment": "factual/opinion/misleading",
-  "key_themes": ["theme1", "theme2"]
-}`;
-      }
-
-      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "llama-3.1-70b-versatile",
-          messages: [
-            {
-              role: "system",
-              content: systemPrompt
-            },
-            {
-              role: "user",
-              content: `Analyze this tweet: "${text}"`
-            }
-          ],
-          temperature: 0.7,
-          max_tokens: 500
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error("Groq API request failed");
-      }
-
-      const data = await response.json();
-      const content = data.choices[0]?.message?.content || "{}";
-      
       let result: AnalysisResult;
-      try {
-        const parsed = JSON.parse(content);
+
+      // Use the backend API for emotion analysis (original endpoint)
+      if (type === 'emotion') {
+        const response = await fetch("https://is-your-tweet-sweet-76xs.vercel.app/analyze_tweet", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "accept": "application/json"
+          },
+          body: JSON.stringify({
+            tweet: text,
+            userid: session?.user?.twitterId || "1"
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error("Backend API request failed");
+        }
+
+        const data = await response.json();
         result = {
-          emotion: parsed.emotion || "🤔",
-          reasoning: parsed.reasoning || "Analysis completed",
-          confidence_level: parsed.confidence_level || 0.75,
-          sentiment: parsed.sentiment,
-          key_themes: parsed.key_themes || [],
-          toxicity_score: parsed.toxicity_score
+          emotion: data.emotion || "🤔",
+          reasoning: data.reasoning || "Analysis completed",
+          confidence_level: data.confidence_level || 0.75,
+          sentiment: data.sentiment,
+          key_themes: [],
+          toxicity_score: data.toxicity_score
         };
-      } catch (e) {
-        result = {
-          emotion: "🤔",
-          reasoning: content.slice(0, 200),
-          confidence_level: 0.7
-        };
+      } 
+      // Use Groq API for intention and factual analysis
+      else {
+        let systemPrompt = "";
+        
+        if (type === 'intention') {
+          systemPrompt = `You are an intention analysis expert. Analyze the intent behind tweets and respond in JSON format with:
+{
+  "emotion": "emoji representing intent (like 🎯 for goal-oriented, 💬 for conversational, 📢 for announcement, ❓ for questioning)",
+  "reasoning": "clear explanation of the user's intention and purpose",
+  "confidence_level": number between 0 and 1,
+  "sentiment": "informative/persuasive/expressive/directive/questioning",
+  "key_themes": ["theme1", "theme2"]
+}`;
+        } else {
+          systemPrompt = `You are a fact-checking expert. Analyze claims in tweets and respond in JSON format with:
+{
+  "emotion": "emoji (✅ for verified facts, ⚠️ for questionable/unverified, ❌ for false/misleading, 💭 for opinion)",
+  "reasoning": "detailed explanation of factual accuracy, including what can be verified",
+  "confidence_level": number between 0 and 1,
+  "sentiment": "factual/opinion/misleading/unverified",
+  "key_themes": ["main topics or claims identified"]
+}`;
+        }
+
+        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${GROQ_API_KEY}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: "llama-3.1-70b-versatile",
+            messages: [
+              {
+                role: "system",
+                content: systemPrompt
+              },
+              {
+                role: "user",
+                content: `Analyze this tweet: "${text}"`
+              }
+            ],
+            temperature: 0.7,
+            max_tokens: 600,
+            response_format: { type: "json_object" }
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error("Groq API request failed");
+        }
+
+        const data = await response.json();
+        const content = data.choices[0]?.message?.content || "{}";
+        
+        try {
+          const parsed = JSON.parse(content);
+          result = {
+            emotion: parsed.emotion || "🤔",
+            reasoning: parsed.reasoning || "Analysis completed",
+            confidence_level: parsed.confidence_level || 0.75,
+            sentiment: parsed.sentiment,
+            key_themes: parsed.key_themes || [],
+            toxicity_score: parsed.toxicity_score
+          };
+        } catch (e) {
+          // Fallback if JSON parsing fails
+          result = {
+            emotion: type === 'intention' ? "🎯" : "⚠️",
+            reasoning: content.slice(0, 300) || "Analysis completed",
+            confidence_level: 0.7,
+            sentiment: type === 'intention' ? "informative" : "unverified",
+            key_themes: []
+          };
+        }
       }
       
+      // Add a small delay for better UX
       setTimeout(() => {
         setAnalysis(prev => ({
           ...prev,

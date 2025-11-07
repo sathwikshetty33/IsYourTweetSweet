@@ -1,4 +1,4 @@
-from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_tavily import TavilySearch
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from dotenv import load_dotenv
@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Initialize Tavily (top 5 results)
-tavily = TavilySearchResults(max_results=5)
+tavily = TavilySearch(max_results=5)
 
 # Initialize Groq LLM
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)

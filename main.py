@@ -125,11 +125,25 @@ from dotenv import load_dotenv
 from decider_agent import decide_external_context, DeciderInput  # your existing decider
 from tavily import verify_topic_relevance  # your existing search agent
 
+from fastapi.middleware.cors import CORSMiddleware
+
+
+
 import json
 
 load_dotenv()
 
 app = FastAPI()
+
+origins = ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,            # Specifies the allowed origins
+    allow_credentials=True,           # Allow cookies/authorization headers
+    allow_methods=["*"],              # Allow all standard HTTP methods (GET, POST, etc.)
+    allow_headers=["*"],              # Allow all headers
+)
 
 # ---------------- INPUT / OUTPUT SCHEMAS ----------------
 class TweetInput(BaseModel):

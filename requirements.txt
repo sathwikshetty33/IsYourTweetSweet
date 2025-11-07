@@ -1,0 +1,10 @@
+pip uninstall -y langchain langchain-core langchain-community
+langchain==0.2.16 
+langchain-core==0.2.38 
+langchain-community==0.2.11 
+langchain-groq 
+tavily-python
+python-dotenv
+fastapi
+uvicorn
+pydantic

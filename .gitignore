@@ -1,2 +1,4 @@
 .env
 .venv
+model_pipeline.ipynb
+__pycache__/

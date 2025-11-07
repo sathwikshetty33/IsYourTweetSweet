@@ -23,7 +23,7 @@ app.add_middleware(
     allow_methods=["*"],          # Allow all HTTP methods
     allow_headers=["*"],          # Allow all headers
 )
-# ---------------- DATABASE SETUP ----------------
+
 DB_PATH = "users.db"
 
 def init_db():

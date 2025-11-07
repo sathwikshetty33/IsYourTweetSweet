@@ -1,66 +1,45 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from dotenv import load_dotenv
-import sqlite3
 import json
-from fastapi import HTTPException
-
-from decider_agent import decide_external_context, DeciderInput
-from tavily import verify_topic_relevance
 from fastapi.middleware.cors import CORSMiddleware
+
+# Import external modules with error handling
+try:
+    from decider_agent import decide_external_context, DeciderInput
+    from tavily import verify_topic_relevance
+    HAS_EXTERNAL_TOOLS = True
+except ImportError as e:
+    print(f"[WARNING] External tools not available: {e}")
+    HAS_EXTERNAL_TOOLS = False
 
 load_dotenv()
 
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # Allow all origins (use specific domains in production)
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],          # Allow all HTTP methods
-    allow_headers=["*"],          # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-# ---------------- DATABASE SETUP ----------------
-DB_PATH = "users.db"
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            summary TEXT DEFAULT ''
-        )
-    """)
-    conn.commit()
-    conn.close()
+# ---------------- IN-MEMORY STORAGE ----------------
+# Note: This will reset on each serverless function cold start
+# For production, use Redis, PostgreSQL, or Vercel KV
+user_summaries = {}
 
 def get_user_summary(username: str) -> str:
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT summary FROM users WHERE username = ?", (username,))
-    row = c.fetchone()
-    if row:
-        summary = row[0]
-    else:
-        c.execute("INSERT INTO users (username, summary) VALUES (?, ?)", (username, ""))
-        conn.commit()
-        summary = ""
-    conn.close()
-    return summary
+    """Retrieve user summary from in-memory storage."""
+    return user_summaries.get(username, "")
 
 def update_user_summary(username: str, new_summary: str):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("UPDATE users SET summary = ? WHERE username = ?", (new_summary, username))
-    conn.commit()
-    conn.close()
-
-# Initialize DB
-init_db()
+    """Update user summary in in-memory storage."""
+    user_summaries[username] = new_summary
 
 
 # ---------------- MODELS ----------------
@@ -89,11 +68,23 @@ class FactCheckInput(BaseModel):
 class FactCheckOutput(BaseModel):
     facts: list[str]
 
+class ChatInput(BaseModel):
+    tweet: str
+    query: str
+    userid: str
+
+class ChatResponse(BaseModel):
+    answer: str
+
 
 # ---------------- LLM SETUP ----------------
-llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.2)
-output_parser = PydanticOutputParser(pydantic_object=EmotionAnalysis)
-format_instructions = output_parser.get_format_instructions()
+try:
+    llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.2)
+    output_parser = PydanticOutputParser(pydantic_object=EmotionAnalysis)
+    format_instructions = output_parser.get_format_instructions()
+except Exception as e:
+    print(f"[ERROR] Failed to initialize LLM: {e}")
+    raise
 
 
 # ---------------- PROMPTS ----------------
@@ -156,103 +147,113 @@ fact_check_prompt = ChatPromptTemplate.from_template(
 # ---------------- MAIN ENDPOINT ----------------
 @app.post("/analyze_tweet", response_model=EmotionOutput)
 async def analyze_tweet(tweet_data: TweetInput):
-    user_summary = get_user_summary(tweet_data.userid)
-
-    decider_input = DeciderInput(tweet=tweet_data.tweet, user_context=user_summary)
-    decider_output = decide_external_context(decider_input)
-
-    external_context_summary = ""
-    if decider_output.needsExternalContext and decider_output.topics:
-        summaries = [verify_topic_relevance(t)["summarized_articles"] for t in decider_output.topics]
-        external_context_summary = "\n\n".join(summaries)
-    else:
-        external_context_summary = "None"
-
-    formatted_prompt = sentiment_prompt.format_prompt(
-        tweet=tweet_data.tweet,
-        external_context=external_context_summary,
-        format_instructions=format_instructions
-    )
-
-    response = llm.invoke(formatted_prompt.to_messages())
-
     try:
-        parsed_output: EmotionAnalysis = output_parser.parse(response.content)
-    except Exception:
-        parsed_output = EmotionAnalysis(
-            emotion="neutral 😐",
-            reasoning="Model failed to parse structured response.",
-            confidence_level=0.65
+        user_summary = get_user_summary(tweet_data.userid)
+
+        # Handle external context if tools are available
+        external_context_summary = "None"
+        if HAS_EXTERNAL_TOOLS:
+            try:
+                decider_input = DeciderInput(tweet=tweet_data.tweet, user_context=user_summary)
+                decider_output = decide_external_context(decider_input)
+
+                if decider_output.needsExternalContext and decider_output.topics:
+                    summaries = [verify_topic_relevance(t)["summarized_articles"] for t in decider_output.topics]
+                    external_context_summary = "\n\n".join(summaries)
+            except Exception as e:
+                print(f"[WARNING] External context fetch failed: {e}")
+
+        formatted_prompt = sentiment_prompt.format_prompt(
+            tweet=tweet_data.tweet,
+            external_context=external_context_summary,
+            format_instructions=format_instructions
         )
 
-    update_prompt = summary_update_prompt.format_prompt(
-        old_summary=user_summary,
-        tweet=tweet_data.tweet,
-        emotion=parsed_output.emotion,
-        reasoning=parsed_output.reasoning
-    )
-    update_response = llm.invoke(update_prompt.to_messages())
-    new_summary = update_response.content.strip()
-    update_user_summary(tweet_data.userid, new_summary)
+        response = llm.invoke(formatted_prompt.to_messages())
 
-    return EmotionOutput(
-        emotion=parsed_output.emotion,
-        reasoning=parsed_output.reasoning,
-        confidence_level=parsed_output.confidence_level
-    )
+        try:
+            parsed_output: EmotionAnalysis = output_parser.parse(response.content)
+        except Exception as e:
+            print(f"[WARNING] Parse error: {e}")
+            parsed_output = EmotionAnalysis(
+                emotion="neutral 😐",
+                reasoning="Model failed to parse structured response.",
+                confidence_level=0.65
+            )
+
+        # Update user summary
+        update_prompt = summary_update_prompt.format_prompt(
+            old_summary=user_summary,
+            tweet=tweet_data.tweet,
+            emotion=parsed_output.emotion,
+            reasoning=parsed_output.reasoning
+        )
+        update_response = llm.invoke(update_prompt.to_messages())
+        new_summary = update_response.content.strip()
+        update_user_summary(tweet_data.userid, new_summary)
+
+        return EmotionOutput(
+            emotion=parsed_output.emotion,
+            reasoning=parsed_output.reasoning,
+            confidence_level=parsed_output.confidence_level
+        )
+    
+    except Exception as e:
+        print(f"[ERROR] analyze_tweet failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ---------------- NEW ENDPOINT 1: INTENT ----------------
+# ---------------- INTENT ENDPOINT ----------------
 @app.post("/intent")
 async def modify_tweet(intent_data: IntentInput):
-    user_summary = get_user_summary(intent_data.userid)
-    prompt = intent_prompt.format_prompt(
-        intent=intent_data.intent,
-        summary=user_summary,
-        tweet=intent_data.tweet
-    )
-    response = llm.invoke(prompt.to_messages())
-    modified_tweet = response.content.strip()
-    return {"modified_tweet": modified_tweet}
+    try:
+        user_summary = get_user_summary(intent_data.userid)
+        prompt = intent_prompt.format_prompt(
+            intent=intent_data.intent,
+            summary=user_summary,
+            tweet=intent_data.tweet
+        )
+        response = llm.invoke(prompt.to_messages())
+        modified_tweet = response.content.strip()
+        return {"modified_tweet": modified_tweet}
+    
+    except Exception as e:
+        print(f"[ERROR] intent endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ---------------- NEW ENDPOINT 2: FACT CHECK ----------------
+# ---------------- FACT CHECK ENDPOINT ----------------
 @app.post("/fact-check", response_model=FactCheckOutput)
 async def fact_check(data: FactCheckInput):
-    print("[INFO] Fetching factual context for:", data.tweet)
-    results = verify_topic_relevance(data.tweet)
-    summarized_articles = results.get("summarized_articles", [])
-    if isinstance(summarized_articles, str):
-        summarized_articles = summarized_articles.split("\n")[:5]
-    return FactCheckOutput(facts=summarized_articles)
-class ChatInput(BaseModel):
-    tweet: str
-    query: str
-    userid: str
+    try:
+        if not HAS_EXTERNAL_TOOLS:
+            raise HTTPException(status_code=503, detail="Fact-check tools not available")
+        
+        print("[INFO] Fetching factual context for:", data.tweet)
+        results = verify_topic_relevance(data.tweet)
+        summarized_articles = results.get("summarized_articles", [])
+        
+        if isinstance(summarized_articles, str):
+            summarized_articles = summarized_articles.split("\n")[:5]
+        
+        return FactCheckOutput(facts=summarized_articles)
+    
+    except Exception as e:
+        print(f"[ERROR] fact_check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-class ChatResponse(BaseModel):
-    answer: str
-
-
+# ---------------- CHAT ENDPOINT ----------------
 @app.post("/chat", response_model=ChatResponse)
 async def chat_with_context(chat_data: ChatInput):
-    """Chat endpoint that fetches user summary and answers query."""
+    """Chat endpoint that uses user summary and answers query."""
+    try:
+        user_summary = get_user_summary(chat_data.userid)
+        if not user_summary:
+            user_summary = "No prior summary available."
 
-    # --- Step 1: Fetch user summary from database ---
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT summary FROM users WHERE username = ?", (chat_data.userid,))
-    row = cursor.fetchone()
-    conn.close()
-    user_summary = ""
-    if row:
-        user_summary = row[0] if row[0] else "No prior summary available."
-    
-
-    # --- Step 2: Build the prompt ---
-    chat_prompt = ChatPromptTemplate.from_template(
-        """
+        chat_prompt = ChatPromptTemplate.from_template(
+            """
 You are an intelligent emotional analysis and conversational assistant.
 You have access to:
 - The user's historical emotional summary
@@ -272,16 +273,27 @@ User Query:
 
 Answer clearly and naturally:
 """
-    )
+        )
 
-    formatted_prompt = chat_prompt.format_prompt(
-        user_summary=user_summary,
-        tweet=chat_data.tweet,
-        query=chat_data.query
-    )
+        formatted_prompt = chat_prompt.format_prompt(
+            user_summary=user_summary,
+            tweet=chat_data.tweet,
+            query=chat_data.query
+        )
 
-    # --- Step 3: Get response from Groq ---
-    response = llm.invoke(formatted_prompt.to_messages())
+        response = llm.invoke(formatted_prompt.to_messages())
+        return ChatResponse(answer=response.content.strip())
+    
+    except Exception as e:
+        print(f"[ERROR] chat endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    # --- Step 4: Return structured response ---
-    return ChatResponse(answer=response.content.strip())
+
+# ---------------- HEALTH CHECK ----------------
+@app.get("/")
+async def health_check():
+    return {
+        "status": "ok",
+        "external_tools": HAS_EXTERNAL_TOOLS,
+        "storage": "in-memory"
+    }

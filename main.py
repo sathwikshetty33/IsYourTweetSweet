@@ -7,6 +7,7 @@ from langchain.output_parsers import PydanticOutputParser
 from dotenv import load_dotenv
 import sqlite3
 import json
+from fastapi import HTTPException
 
 from decider_agent import decide_external_context, DeciderInput
 from tavily import verify_topic_relevance
@@ -224,3 +225,63 @@ async def fact_check(data: FactCheckInput):
     if isinstance(summarized_articles, str):
         summarized_articles = summarized_articles.split("\n")[:5]
     return FactCheckOutput(facts=summarized_articles)
+class ChatInput(BaseModel):
+    tweet: str
+    query: str
+    userid: str
+
+
+class ChatResponse(BaseModel):
+    answer: str
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat_with_context(chat_data: ChatInput):
+    """Chat endpoint that fetches user summary and answers query."""
+
+    # --- Step 1: Fetch user summary from database ---
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT summary FROM users WHERE username = ?", (chat_data.userid,))
+    row = cursor.fetchone()
+    conn.close()
+    user_summary = ""
+    if row:
+        user_summary = row[0] if row[0] else "No prior summary available."
+    
+
+    # --- Step 2: Build the prompt ---
+    chat_prompt = ChatPromptTemplate.from_template(
+        """
+You are an intelligent emotional analysis and conversational assistant.
+You have access to:
+- The user's historical emotional summary
+- The latest tweet they posted
+- A user query asking about insights or interpretation.
+
+Use all context carefully to provide a short, factual, and empathetic answer.
+
+User Summary:
+{user_summary}
+
+Recent Tweet:
+{tweet}
+
+User Query:
+{query}
+
+Answer clearly and naturally:
+"""
+    )
+
+    formatted_prompt = chat_prompt.format_prompt(
+        user_summary=user_summary,
+        tweet=chat_data.tweet,
+        query=chat_data.query
+    )
+
+    # --- Step 3: Get response from Groq ---
+    response = llm(formatted_prompt.to_messages())
+
+    # --- Step 4: Return structured response ---
+    return ChatResponse(answer=response.content.strip())

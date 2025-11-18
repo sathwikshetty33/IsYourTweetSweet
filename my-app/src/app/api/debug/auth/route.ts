@@ -63,5 +63,4 @@ export async function GET() {
         details: error instanceof Error ? error.message : String(error),
         stack: process.env.NODE_ENV === "development" ? error.stack : undefined
       },
-      { status: 500 }
-    );}}
+      { status: 500 });}}
